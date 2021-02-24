@@ -1,0 +1,191 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Tags compliance Automation'
+Transform: 'AWS::Serverless-2016-10-31'
+Parameters:
+  TagsPrefix:
+    Type: 'String'
+    Default: '/Tags/'        
+  LogLevel:
+    Type: 'String'
+    Default: 'INFO' 
+  TagsComplianceRuleName:
+    Type: 'String'
+    Default: 'Tags-compliance-rule'     
+  LogsRetentionInDays:
+    Type: 'Number'
+    Default: 3
+
+
+Resources:
+
+  TagsComplianceRule:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: !Ref TagsComplianceRuleName
+      Scope:
+        ComplianceResourceTypes:
+          - 'AWS::ACM::Certificate'
+          - 'AWS::AutoScaling::AutoScalingGroup'
+          - 'AWS::CloudFormation::Stack'
+          - 'AWS::CodeBuild::Project'
+          - 'AWS::DynamoDB::Table'
+          - 'AWS::EC2::CustomerGateway'
+          - 'AWS::EC2::Instance'
+          - 'AWS::EC2::InternetGateway'
+          - 'AWS::EC2::NetworkAcl'
+          - 'AWS::EC2::NetworkInterface'
+          - 'AWS::EC2::RouteTable'
+          - 'AWS::EC2::SecurityGroup'
+          - 'AWS::EC2::Subnet'
+          - 'AWS::EC2::Volume'
+          - 'AWS::EC2::VPC'
+          - 'AWS::EC2::VPNConnection'
+          - 'AWS::EC2::VPNGateway'
+          - 'AWS::ElasticLoadBalancing::LoadBalancer'
+          - 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+          - 'AWS::RDS::DBInstance'
+          - 'AWS::RDS::DBSecurityGroup'
+          - 'AWS::RDS::DBSnapshot'
+          - 'AWS::RDS::DBSubnetGroup'
+          - 'AWS::RDS::EventSubscription'
+          - 'AWS::Redshift::Cluster'
+          - 'AWS::Redshift::ClusterParameterGroup'
+          - 'AWS::Redshift::ClusterSecurityGroup'
+          - 'AWS::Redshift::ClusterSnapshot'
+          - 'AWS::Redshift::ClusterSubnetGroup'
+          - 'AWS::S3::Bucket'        
+      Source:
+        Owner: "CUSTOM_LAMBDA"
+        SourceDetails:
+          - EventSource: "aws.config"
+            MessageType: "ConfigurationItemChangeNotification"
+        SourceIdentifier: !GetAtt AutomationTag.Arn
+
+
+  AutomationTag:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: Launch RunCommand
+      Code: ../src/
+      Handler: 'tags-aws-config.lambda_handler'
+      MemorySize: 128
+      Role: !GetAtt LambdaServiceRole.Arn
+      Runtime: 'python3.7'
+      Timeout: 300
+      Environment:
+        Variables:
+          PREFIX_PARAMETER: !Ref TagsPrefix
+          LOG_LEVEL: !Ref LogLevel
+          CONFIG_RULE_NAME: !Ref  TagsComplianceRuleName
+
+
+  LambdaLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AutomationTag}'
+      RetentionInDays: !Ref LogsRetentionInDays      
+
+  EventRulePermissionsChangeParameter:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt AutomationTag.Arn
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ParameterChangeEventRule.Arn
+
+  ConfigPermissionToCallLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt AutomationTag.Arn 
+      Action: "lambda:InvokeFunction"
+      Principal: "config.amazonaws.com"
+#      SourceArn: !GetAtt TagsComplianceRule.Arn
+
+  LambdaManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties: 
+      Description: 'Customer Managed Policy for Lambda'
+      Path: / 
+      PolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowTags
+            Effect: Allow
+            Action: 
+              - tag:GetResources
+              - tag:GetTagKeys
+              - tag:UntagResources
+              - tag:GetTagValues
+              - tag:TagResources
+              - ec2:CreateTags
+            Resource:
+              - '*'
+          - Sid: AllowConfig
+            Effect: Allow
+            Action: 
+              - config:GetResourceConfigHistory
+              - config:PutConfigRule
+              - config:PutEvaluations
+              - config:GetResources
+              - config:StartConfigRulesEvaluation
+            Resource:
+              - '*'  
+          - Sid: AllowDescribeParameterStore                          
+            Effect: Allow
+            Action: 
+              - ssm:DescribeParameters
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+            Resource:
+              - '*'                            
+
+  LambdaServiceRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              Service: 
+                - 'lambda.amazonaws.com'
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref LambdaManagedPolicy
+
+
+  ParameterChangeEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Change Tags
+      Targets:
+        - Arn: !GetAtt AutomationTag.Arn
+          Id: target-id1
+      EventPattern: !Sub 
+        - | 
+          {
+              "source": [
+                  "aws.ssm"
+              ],
+              "detail-type": [
+                  "Parameter Store Change"
+              ],
+              "detail": {
+                  "name": [
+                      {
+                        "prefix": "${Prefix}"
+                      }
+                  ],
+                  "operation": [
+                      "Create",
+                      "Update",
+                      "Delete",
+                      "LabelParameterVersion"
+                  ]
+              }
+          }
+        - Prefix: !Ref TagsPrefix 

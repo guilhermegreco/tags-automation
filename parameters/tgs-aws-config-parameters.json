@@ -1,0 +1,8 @@
+{
+    "Parameters": {
+      "TagsPrefix": "/Tags/",
+      "TagsComplianceRuleName": "Tags-compliance-rule",
+      "LogLevel" : "DEBUG",
+      "LogsRetentionInDays": 3
+    }
+  }
